@@ -1,0 +1,5 @@
+disnake
+disnake[voice]
+datetime
+python-dateutil
+pytz
