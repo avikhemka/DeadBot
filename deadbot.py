@@ -11,7 +11,7 @@ import json
 import os
 import re
 
-TOKEN = "MTA5MDYwNzY3OTUyMjc1MDUxNA.GTmsv8.UWIwxf02IQP5PtB-PFPWS47ay6tCE-Xos69NN8"
+TOKEN = "token"
 
 intents = disnake.Intents.default()
 intents.message_content = True
