@@ -5,13 +5,54 @@ from disnake.ext import commands, tasks
 from disnake.app_commands import Option, OptionType
 from datetime import datetime, timedelta
 from dateutil import parser as dateparser
-from pytz import timezone
+from pytz import all_timezones, timezone
 from disnake import TextChannel
 import json
 import os
 import re
 
-TOKEN = "token"
+
+async def send_reminders():
+    for guild in bot.guilds:
+        # Load deadlines for the current guild
+        guild_id = guild.id
+        with open(f"server-deadlines/{guild_id}.json", "r") as f:
+            deadlines = json.load(f)
+
+        # Iterate through each deadline in the guild
+        for project_name, deadline_data in deadlines.items():
+            # Calculate the remaining days
+            dt = dateparser.parse(deadline_data["deadline"])
+            days_remaining = (dt - datetime.now(dt.tzinfo)).days
+
+            # Check if the remaining days match any of the reminder days
+            if days_remaining in [10, 5, 2]:
+                # Get the roles mentioned in the deadline
+                mentioned_roles = [f"<@&{role.id}>" for role in guild.roles if role.name in deadline_data["roles"]]
+
+                # Send a reminder message to the deadlines channel
+                deadlines_channel = disnake.utils.get(guild.text_channels, name="deadlines")
+                reminder_message = (
+                    f"⏰ Reminder for {', '.join(mentioned_roles)}:\n\n"
+                    f"Project: {project_name}\n"
+                    f"Deadline: {dt.strftime('%Y-%m-%d %H:%M%Z')}\n"
+                    f"{'-' * 29}Days until deadline: {days_remaining} Days{'-' * 29}\n"
+                )
+                await deadlines_channel.send(reminder_message)
+
+
+def generate_tzinfos():
+    tzinfos = {}
+    for tz in all_timezones:
+        tz_obj = timezone(tz)
+        tz_abbreviation = tz_obj.tzname(datetime.now())
+        tzinfos[tz_abbreviation] = tz_obj
+    return tzinfos
+
+
+TZINFOS = generate_tzinfos()
+
+TOKEN = "token goes here"
 
 intents = disnake.Intents.default()
 intents.message_content = True
@@ -46,6 +87,56 @@ async def on_ready():
     for guild in bot.guilds:
         print(f"{guild.name}")
 
+    update_deadlines_task.start()  # Start the background task
+    send_reminders_task.start()  # Start the "send reminders" background task
+
+
+async def update_deadlines():
+    for guild in bot.guilds:
+        # Load deadlines for the current guild
+        guild_id = guild.id
+        with open(f"server-deadlines/{guild_id}.json", "r") as f:
+            deadlines = json.load(f)
+
+        # Find the deadlines channel
+        deadlines_channel = disnake.utils.get(guild.text_channels, name="deadlines")
+
+        if deadlines_channel:
+            # Iterate through each deadline in the guild
+            for project_name, deadline_data in deadlines.items():
+                # Calculate the remaining days
+                dt = dateparser.parse(deadline_data["deadline"])
+                days_remaining = (dt - datetime.now(dt.tzinfo)).days
+
+                # Update the message
+                message_id = deadline_data["message_id"]
+                message = await deadlines_channel.fetch_message(message_id)
+
+                # Create an updated message
+                deadline_message = (
+                    f"Project: {project_name}\n\n"
+                    f"Deadline: {dt.strftime('%Y-%m-%d %H:%M%Z')}\n\n"
+                    f"Description: {deadline_data['description']}\n\n"
+                    f"{'-' * 29}Days until deadline: {days_remaining} Days{'-' * 29}\n\n"
+                    f"Deadline created by: <@{deadline_data['created_by']}>\n\n"
+                    f"Team: {', '.join(deadline_data['roles'])}"
+                )
+
+                # Edit the existing message
+                await message.edit(content=deadline_message)
+
+
+@tasks.loop(hours=24)
+async def update_deadlines_task():
+    await bot.wait_until_ready()
+    await update_deadlines()
+
+
+@tasks.loop(hours=24)
+async def send_reminders_task():
+    await bot.wait_until_ready()
+    await send_reminders()
+
 
 @bot.event
 async def on_raw_message_delete(payload: disnake.RawMessageDeleteEvent):
@@ -71,6 +162,7 @@ async def on_raw_message_delete(payload: disnake.RawMessageDeleteEvent):
                 print(f"Deadline for project {project_name} deleted.")
                 break
 
+
 @bot.slash_command(
     name="deadbot",
     description="Create a new deadline",
@@ -87,7 +179,7 @@ async def on_raw_message_delete(payload: disnake.RawMessageDeleteEvent):
 async def deadbot(inter: ApplicationCommandInteraction, project_name: str, deadline_date: str, deadline_time: str,
                   timezone: str, roles: str, description: str):
     try:
-        dt = dateparser.parse(f"{deadline_date} {deadline_time} {timezone}")
+        dt = dateparser.parse(f"{deadline_date} {deadline_time} {timezone}", tzinfos=TZINFOS)
         parsed_roles = [role.strip() for role in roles.split(",")]
 
         days_remaining = (dt - datetime.now(dt.tzinfo)).days
